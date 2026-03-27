@@ -59,6 +59,7 @@ export interface AppSettings {
     productsEndpoint: string;
     customersEndpoint: string;
     appPin: string;
+    posPresetAmounts: string;
 }
 
 export interface ProductItem {

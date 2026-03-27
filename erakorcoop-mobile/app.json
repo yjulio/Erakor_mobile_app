@@ -4,10 +4,10 @@
     "slug": "erakorcoop-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/erakor-logo.png",
+    "icon": "./assets/erakor-logo-square.png",
     "userInterfaceStyle": "light",
     "splash": {
-      "image": "./assets/erakor-logo.png",
+      "image": "./assets/erakor-logo-square.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
@@ -17,7 +17,7 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#FFFFFF",
-        "foregroundImage": "./assets/erakor-logo.png"
+        "foregroundImage": "./assets/erakor-logo-square.png"
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.jyaruel.erakorcoopmobile"

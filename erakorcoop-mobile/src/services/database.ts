@@ -18,6 +18,7 @@ const defaultSettings: AppSettings = {
     productsEndpoint: '/products',
     customersEndpoint: '/members',
     appPin: '',
+    posPresetAmounts: '50,100,150,200,250,300',
 };
 
 const legacyEndpointMap: Partial<AppSettings> = {
@@ -30,6 +31,22 @@ const legacyEndpointMap: Partial<AppSettings> = {
 export async function initializeDatabase(): Promise<void> {
     const db = await dbPromise;
 
+    try {
+        await applySchema(db);
+        const isHealthy = await validateDatabase(db);
+        if (!isHealthy) {
+            throw new Error('Local database integrity check failed.');
+        }
+        await ensureDefaultSettings();
+    } catch {
+        // Self-heal local DB schema issues by recreating local tables.
+        await resetLocalDatabase(db);
+        await applySchema(db);
+        await ensureDefaultSettings();
+    }
+}
+
+async function applySchema(db: SQLite.SQLiteDatabase): Promise<void> {
     await db.execAsync(`
     CREATE TABLE IF NOT EXISTS transactions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,6 +109,17 @@ export async function initializeDatabase(): Promise<void> {
             join_date TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL
         );
+
+    CREATE TABLE IF NOT EXISTS daily_product_markup (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      date_key TEXT NOT NULL,
+      markup_type TEXT NOT NULL,
+      markup_value REAL NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      UNIQUE(product_id, date_key),
+      FOREIGN KEY(product_id) REFERENCES products(id)
+    );
   `);
 
     await ensureColumn('transactions', 'product_id', 'INTEGER');
@@ -108,8 +136,43 @@ export async function initializeDatabase(): Promise<void> {
     await ensureColumn('customers', 'member_id', "TEXT NOT NULL DEFAULT ''");
     await ensureColumn('customers', 'phone', "TEXT NOT NULL DEFAULT ''");
     await ensureColumn('customers', 'join_date', "TEXT NOT NULL DEFAULT ''");
+    await ensureColumn('daily_product_markup', 'markup_type', "TEXT NOT NULL DEFAULT ''");
+    await ensureColumn('daily_product_markup', 'markup_value', 'REAL NOT NULL DEFAULT 0');
+}
 
-    await ensureDefaultSettings();
+async function resetLocalDatabase(db: SQLite.SQLiteDatabase): Promise<void> {
+    await db.execAsync(`
+      PRAGMA foreign_keys = OFF;
+      DROP TABLE IF EXISTS product_sync_queue;
+      DROP TABLE IF EXISTS sync_queue;
+      DROP TABLE IF EXISTS transactions;
+      DROP TABLE IF EXISTS products;
+      DROP TABLE IF EXISTS customers;
+      DROP TABLE IF EXISTS settings;
+      PRAGMA foreign_keys = ON;
+    `);
+}
+
+async function validateDatabase(db: SQLite.SQLiteDatabase): Promise<boolean> {
+    try {
+        const health = await db.getFirstAsync<{ quick_check: string }>('PRAGMA quick_check;');
+        if (health?.quick_check && health.quick_check.toLowerCase() !== 'ok') {
+            return false;
+        }
+
+        // Ensure critical tables are queryable after migrations.
+        await db.getFirstAsync('SELECT COUNT(*) as c FROM settings;');
+        await db.getFirstAsync('SELECT COUNT(*) as c FROM products;');
+        await db.getFirstAsync('SELECT COUNT(*) as c FROM customers;');
+        await db.getFirstAsync('SELECT COUNT(*) as c FROM transactions;');
+        await db.getFirstAsync('SELECT COUNT(*) as c FROM sync_queue;');
+        await db.getFirstAsync('SELECT COUNT(*) as c FROM product_sync_queue;');
+        await db.getFirstAsync('SELECT COUNT(*) as c FROM daily_product_markup;');
+
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 export async function addTransaction(input: TransactionInput): Promise<void> {
@@ -324,6 +387,35 @@ export async function markProductSyncAttemptFailed(queueId: number, retryCount: 
     await db.runAsync(
         'UPDATE product_sync_queue SET retry_count = ?, next_retry_at = ?, last_error = ? WHERE id = ?',
         [retryCount, nextRetryAt, error, queueId],
+    );
+}
+
+export async function loadDailyMarkupForProduct(productId: number, dateKey: string): Promise<{ markupType: string; markupValue: number } | null> {
+    const db = await dbPromise;
+    const row = await db.getFirstAsync<{ markupType: string; markupValue: number }>(
+        `SELECT
+            markup_type as markupType,
+            markup_value as markupValue
+         FROM daily_product_markup
+         WHERE product_id = ? AND date_key = ?
+         LIMIT 1`,
+        [productId, dateKey],
+    );
+
+    return row ?? null;
+}
+
+export async function saveDailyMarkupForProduct(productId: number, dateKey: string, markupType: string, markupValue: number): Promise<void> {
+    const db = await dbPromise;
+    await db.runAsync(
+        `INSERT INTO daily_product_markup (product_id, date_key, markup_type, markup_value, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(product_id, date_key)
+         DO UPDATE SET
+            markup_type = excluded.markup_type,
+            markup_value = excluded.markup_value,
+            updated_at = excluded.updated_at`,
+        [productId, dateKey, markupType, markupValue, new Date().toISOString()],
     );
 }
 

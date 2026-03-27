@@ -17,25 +17,21 @@ import {
   addTransaction,
   countPendingSyncItems,
   initializeDatabase,
+  loadDailyMarkupForProduct,
+  listPendingSyncQueue,
   listCustomers,
   listProducts,
   loadSettings,
+  saveDailyMarkupForProduct,
   saveSettings,
-  listTransactions,
 } from './src/services/database';
-import { pushProductToServer, subscribeToConnectivity, syncMasterData, syncQueuedProducts, syncQueuedTransactions } from './src/services/syncService';
-import { AppSettings, CustomerItem, LocalTransaction, ProductItem, TransactionType } from './src/types';
+import { subscribeToConnectivity, syncMasterData, syncQueuedProducts, syncQueuedTransactions } from './src/services/syncService';
+import { AppSettings, CustomerItem, ProductItem } from './src/types';
 
 export default function App() {
-  const [itemName, setItemName] = useState('');
-  const [quantity, setQuantity] = useState('');
-  const [unitPrice, setUnitPrice] = useState('');
-  const [transactionType, setTransactionType] = useState<TransactionType>('purchase');
-  const [transactions, setTransactions] = useState<LocalTransaction[]>([]);
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [customers, setCustomers] = useState<CustomerItem[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<ProductItem | null>(null);
-  const [selectedCustomer, setSelectedCustomer] = useState<CustomerItem | null>(null);
   const [settings, setSettings] = useState<AppSettings>({
     authToken: '',
     purchasesEndpoint: '/purchases',
@@ -43,70 +39,86 @@ export default function App() {
     productsEndpoint: '/products',
     customersEndpoint: '/members',
     appPin: '',
+    posPresetAmounts: '50,100,150,200,250,300',
   });
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
   const [isOnline, setIsOnline] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isRefreshingMasterData, setIsRefreshingMasterData] = useState(false);
   const [isSyncingProducts, setIsSyncingProducts] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [showProductPicker, setShowProductPicker] = useState(false);
-  const [showCustomerPicker, setShowCustomerPicker] = useState(false);
   const [showAddProductModal, setShowAddProductModal] = useState(false);
-  const [showPinForm, setShowPinForm] = useState(false);
+  const [showMemberKeypad, setShowMemberKeypad] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [pinInput, setPinInput] = useState('');
   const [newPin, setNewPin] = useState('');
   const [confirmNewPin, setConfirmNewPin] = useState('');
-  const [currentPin, setCurrentPin] = useState('');
-  const [updatedPin, setUpdatedPin] = useState('');
-  const [confirmUpdatedPin, setConfirmUpdatedPin] = useState('');
   const [newProductName, setNewProductName] = useState('');
   const [newProductUnit, setNewProductUnit] = useState('');
   const [newProductPrice, setNewProductPrice] = useState('');
   const [isAddingProduct, setIsAddingProduct] = useState(false);
+  const [quickAmount, setQuickAmount] = useState<number | null>(null);
+  const [quickMemberId, setQuickMemberId] = useState('');
+  const [quickQuantity, setQuickQuantity] = useState('1');
+  const [quickUnitPrice, setQuickUnitPrice] = useState('');
+  const [quickMarkupType, setQuickMarkupType] = useState<'fixed' | 'percent'>('fixed');
+  const [quickMarkupValue, setQuickMarkupValue] = useState('');
+  const [syncStatusText, setSyncStatusText] = useState('No sync yet');
+  const [syncStatusTone, setSyncStatusTone] = useState<'neutral' | 'success' | 'error'>('neutral');
 
-  const totalPreview = useMemo(() => {
-    const parsedQty = Number(quantity);
-    const parsedPrice = Number(unitPrice);
+  const parsedPresetAmounts = useMemo(() => {
+    const values = settings.posPresetAmounts
+      .split(',')
+      .map((value) => Number(value.trim()))
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .slice(0, 9);
 
-    if (Number.isNaN(parsedQty) || Number.isNaN(parsedPrice)) {
-      return 0;
+    if (values.length > 0) {
+      return values;
     }
 
-    return parsedQty * parsedPrice;
-  }, [quantity, unitPrice]);
+    return [50, 100, 150, 200, 250, 300];
+  }, [settings.posPresetAmounts]);
 
   const refreshData = async () => {
-    const [localTransactions, pending, localProducts, localCustomers, localSettings] = await Promise.all([
-      listTransactions(),
+    const [pending, localProducts, localCustomers, localSettings] = await Promise.all([
       countPendingSyncItems(),
       listProducts(),
       listCustomers(),
       loadSettings(),
     ]);
-    setTransactions(localTransactions);
     setPendingSyncCount(pending);
     setProducts(localProducts);
     setCustomers(localCustomers);
     setSettings(localSettings);
   };
 
-  const runTransactionSync = async (showAlert = true) => {
+  const runTransactionSync = async (showAlert = true, forceRetry = false) => {
     if (isSyncing) {
       return;
     }
 
     setIsSyncing(true);
     try {
-      const result = await syncQueuedTransactions();
+      // Keep persisted settings in sync with currently edited values before syncing.
+      await saveSettings(settings);
+      const result = await syncQueuedTransactions(forceRetry);
       await refreshData();
 
       if (showAlert && (result.synced > 0 || result.failed > 0 || result.skipped > 0)) {
+        let errorDetails = '';
+        if (result.failed > 0) {
+          const pendingItems = await listPendingSyncQueue();
+          const firstError = pendingItems.find((item) => item.lastError)?.lastError;
+          if (firstError) {
+            errorDetails = `\nReason: ${firstError}`;
+          }
+        }
+
         Alert.alert(
           'Transaction sync finished',
-          `Synced: ${result.synced}\nFailed: ${result.failed}\nWaiting retry: ${result.skipped}`,
+          `Synced: ${result.synced}\nFailed: ${result.failed}\nWaiting retry: ${result.skipped}${errorDetails}`,
         );
       }
     } finally {
@@ -121,6 +133,8 @@ export default function App() {
 
     setIsRefreshingMasterData(true);
     try {
+      // Keep persisted settings in sync with currently edited values before syncing.
+      await saveSettings(settings);
       const result = await syncMasterData();
       await refreshData();
 
@@ -146,6 +160,8 @@ export default function App() {
 
     setIsSyncingProducts(true);
     try {
+      // Keep persisted settings in sync with currently edited values before syncing.
+      await saveSettings(settings);
       const result = await syncQueuedProducts();
       await refreshData();
 
@@ -161,9 +177,15 @@ export default function App() {
   };
 
   const runFullSync = async (showAlert = true) => {
+    setSyncStatusTone('neutral');
+    setSyncStatusText('Sync in progress...');
+
+    let hasError = false;
+
     try {
       await runProductSync(false);
     } catch {
+      hasError = true;
       if (showAlert) {
         Alert.alert('Product sync failed', 'Locally added products could not be sent to server yet.');
       }
@@ -171,6 +193,7 @@ export default function App() {
 
     const masterDataOk = await runMasterDataSync(false);
     if (!masterDataOk && showAlert) {
+      hasError = true;
       const message = 'Products/members could not be refreshed from the server.';
       Alert.alert('Master data sync failed', message);
     }
@@ -178,10 +201,19 @@ export default function App() {
     try {
       await runTransactionSync(showAlert);
     } catch (error) {
+      hasError = true;
       const message = error instanceof Error ? error.message : 'Transaction sync failed.';
       if (showAlert) {
         Alert.alert('Transaction sync failed', message);
       }
+    }
+
+    if (hasError) {
+      setSyncStatusTone('error');
+      setSyncStatusText(`Last sync failed - ${new Date().toLocaleTimeString()}`);
+    } else {
+      setSyncStatusTone('success');
+      setSyncStatusText(`Last sync successful - ${new Date().toLocaleTimeString()}`);
     }
   };
 
@@ -234,12 +266,6 @@ export default function App() {
     };
   }, [isOnline]);
 
-  const handleSaveSettings = async () => {
-    await saveSettings(settings);
-    await refreshData();
-    Alert.alert('Settings saved', 'API token and endpoints were saved locally.');
-  };
-
   const handleCreatePin = async () => {
     if (newPin.length < 4) {
       Alert.alert('PIN required', 'PIN must be at least 4 digits.');
@@ -274,107 +300,8 @@ export default function App() {
     Alert.alert('Invalid PIN', 'Please enter the correct PIN.');
   };
 
-  const handleChangePin = async () => {
-    if (currentPin !== settings.appPin) {
-      Alert.alert('Invalid PIN', 'Current PIN is incorrect.');
-      return;
-    }
-
-    if (updatedPin.length < 4 || !/^\d+$/.test(updatedPin)) {
-      Alert.alert('PIN required', 'New PIN must be at least 4 digits and numeric only.');
-      return;
-    }
-
-    if (updatedPin !== confirmUpdatedPin) {
-      Alert.alert('PIN mismatch', 'New PIN and confirmation do not match.');
-      return;
-    }
-
-    const nextSettings = { ...settings, appPin: updatedPin };
-    await saveSettings(nextSettings);
-    setSettings(nextSettings);
-    setCurrentPin('');
-    setUpdatedPin('');
-    setConfirmUpdatedPin('');
-    setShowPinForm(false);
-    Alert.alert('PIN updated', 'Your app PIN has been changed.');
-  };
-
-  const handleSave = async () => {
-    const parsedQty = Number(quantity);
-    const parsedPrice = Number(unitPrice);
-
-    if (!itemName.trim()) {
-      Alert.alert('Validation', 'Item name is required.');
-      return;
-    }
-
-    if (Number.isNaN(parsedQty) || parsedQty <= 0) {
-      Alert.alert('Validation', 'Quantity must be greater than 0.');
-      return;
-    }
-
-    if (Number.isNaN(parsedPrice) || parsedPrice <= 0) {
-      Alert.alert('Validation', 'Unit price must be greater than 0.');
-      return;
-    }
-
-    if (!selectedProduct) {
-      Alert.alert('Validation', 'Please select a product before saving.');
-      return;
-    }
-
-    const today = new Date().toDateString();
-    const hasPossibleDuplicate = transactions.some((record) => {
-      const sameDay = new Date(record.createdAt).toDateString() === today;
-      const sameType = record.type === transactionType;
-      const sameItem = record.itemName.trim().toLowerCase() === itemName.trim().toLowerCase();
-      const sameQty = Number(record.quantity) === parsedQty;
-      const sameUnitPrice = Number(record.unitPrice) === parsedPrice;
-      return sameDay && sameType && sameItem && sameQty && sameUnitPrice;
-    });
-
-    if (hasPossibleDuplicate) {
-      Alert.alert(
-        'Possible duplicate',
-        'A very similar record already exists today (same product, quantity and price). Adjust values if this should be a different sale.',
-      );
-      return;
-    }
-
-    await addTransaction({
-      type: transactionType,
-      itemName: itemName.trim(),
-      productId: selectedProduct?.id ?? null,
-      customerId: selectedCustomer?.id ?? null,
-      productRemoteId: selectedProduct?.remoteId ?? null,
-      customerRemoteId: selectedCustomer?.remoteId ?? null,
-      memberRemoteId: selectedCustomer?.memberId ?? selectedCustomer?.remoteId ?? null,
-      quantity: parsedQty,
-      unitPrice: parsedPrice,
-    });
-
-    setItemName('');
-    setQuantity('');
-    setUnitPrice('');
-    setSelectedProduct(null);
-    setSelectedCustomer(null);
-
-    await refreshData();
-
-    if (isOnline) {
-      runTransactionSync(false).catch(() => {
-        // Item remains queued if sync fails.
-      });
-    }
-  };
-
   const applySelectedProduct = (product: ProductItem) => {
     setSelectedProduct(product);
-    setItemName(product.name);
-    if (!unitPrice.trim() || Number(unitPrice) <= 0) {
-      setUnitPrice(product.unitPrice.toString());
-    }
     setShowProductPicker(false);
   };
 
@@ -411,10 +338,6 @@ export default function App() {
       const created = updatedProducts.find((product) => product.name.trim().toLowerCase() === normalizedName.toLowerCase());
       if (created) {
         setSelectedProduct(created);
-        setItemName(created.name);
-        if (!unitPrice.trim() || Number(unitPrice) <= 0) {
-          setUnitPrice(created.unitPrice.toString());
-        }
       }
       await refreshData();
       setShowAddProductModal(false);
@@ -439,7 +362,155 @@ export default function App() {
     }
   };
 
-  const syncButtonLabel = isSyncing ? 'Syncing...' : 'Sync Transactions';
+  const handleQuickReset = () => {
+    setQuickAmount(null);
+    setQuickMemberId('');
+    setQuickQuantity('1');
+    setQuickUnitPrice('');
+    setQuickMarkupValue('');
+    setQuickMarkupType('fixed');
+  };
+
+  const appendMemberDigit = (digit: string) => {
+    setQuickMemberId((current) => `${current}${digit}`.slice(0, 18));
+  };
+
+  const removeLastMemberDigit = () => {
+    setQuickMemberId((current) => current.slice(0, -1));
+  };
+
+  const handleSelectQuickAmount = (amount: number) => {
+    setQuickAmount(amount);
+    setQuickUnitPrice(amount.toString());
+    if (!quickMemberId.trim()) {
+      setShowMemberKeypad(true);
+    }
+  };
+
+  const getTodayDateKey = () => {
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${now.getFullYear()}-${month}-${day}`;
+  };
+
+  const calculateUnitPriceFromMarkup = (basePrice: number, type: 'fixed' | 'percent', rawValue: string) => {
+    const markupValue = Number(rawValue || 0);
+    if (Number.isNaN(markupValue)) {
+      return basePrice;
+    }
+
+    if (type === 'percent') {
+      return Math.max(0, basePrice + (basePrice * markupValue) / 100);
+    }
+
+    return Math.max(0, basePrice + markupValue);
+  };
+
+  const handleQuickBuy = async () => {
+    if (!selectedProduct) {
+      Alert.alert('Select product', 'Choose a product first for quick POS sale.');
+      return;
+    }
+
+    const parsedQty = Number(quickQuantity);
+    const parsedUnitPrice = Number(quickUnitPrice || quickAmount || 0);
+
+    if (Number.isNaN(parsedQty) || parsedQty <= 0) {
+      Alert.alert('Invalid quantity', 'Enter a quantity greater than 0.');
+      return;
+    }
+
+    if (Number.isNaN(parsedUnitPrice) || parsedUnitPrice <= 0) {
+      Alert.alert('Invalid price', 'Enter a unit price greater than 0.');
+      return;
+    }
+
+    const normalizedMemberId = quickMemberId.trim().toLowerCase();
+    const matchedCustomer = normalizedMemberId
+      ? customers.find(
+          (customer) =>
+            customer.memberId.trim().toLowerCase() === normalizedMemberId ||
+            customer.remoteId.trim().toLowerCase() === normalizedMemberId,
+        ) ?? null
+      : null;
+
+    await saveDailyMarkupForProduct(
+      selectedProduct.id,
+      getTodayDateKey(),
+      quickMarkupType,
+      Number(quickMarkupValue || 0),
+    );
+
+    await addTransaction({
+      type: 'sale',
+      itemName: selectedProduct.name,
+      productId: selectedProduct.id,
+      customerId: matchedCustomer?.id ?? null,
+      productRemoteId: selectedProduct.remoteId,
+      customerRemoteId: matchedCustomer?.remoteId ?? null,
+      memberRemoteId: matchedCustomer?.memberId ?? matchedCustomer?.remoteId ?? null,
+      quantity: parsedQty,
+      unitPrice: parsedUnitPrice,
+    });
+
+    await refreshData();
+    handleQuickReset();
+
+    if (isOnline) {
+      runTransactionSync(false).catch(() => {
+        // Item remains queued if sync fails.
+      });
+    }
+
+    Alert.alert('Saved', 'Quick sale saved locally.');
+  };
+
+  const handleApplyTodayMarkup = async () => {
+    if (!selectedProduct) {
+      Alert.alert('Select product', 'Choose a product first.');
+      return;
+    }
+
+    const parsedMarkupValue = Number(quickMarkupValue || 0);
+    if (Number.isNaN(parsedMarkupValue)) {
+      Alert.alert('Invalid markup', 'Enter a valid markup number.');
+      return;
+    }
+
+    await saveDailyMarkupForProduct(selectedProduct.id, getTodayDateKey(), quickMarkupType, parsedMarkupValue);
+    const priceWithMarkup = calculateUnitPriceFromMarkup(selectedProduct.unitPrice, quickMarkupType, quickMarkupValue);
+    setQuickUnitPrice(priceWithMarkup.toFixed(2));
+    Alert.alert('Markup saved', 'Today markup saved for this product.');
+  };
+
+  useEffect(() => {
+    const loadTodayMarkup = async () => {
+      if (!selectedProduct) {
+        return;
+      }
+
+      const saved = await loadDailyMarkupForProduct(selectedProduct.id, getTodayDateKey());
+      if (saved) {
+        const resolvedType: 'fixed' | 'percent' = saved.markupType === 'percent' ? 'percent' : 'fixed';
+        setQuickMarkupType(resolvedType);
+        setQuickMarkupValue(String(saved.markupValue));
+        const priceWithMarkup = calculateUnitPriceFromMarkup(selectedProduct.unitPrice, resolvedType, String(saved.markupValue));
+        setQuickUnitPrice(priceWithMarkup.toFixed(2));
+        return;
+      }
+
+      const fallbackType: 'fixed' | 'percent' = selectedProduct.markupType?.toLowerCase() === 'percent' ? 'percent' : 'fixed';
+      setQuickMarkupType(fallbackType);
+      setQuickMarkupValue(String(selectedProduct.markupValue ?? 0));
+      const priceWithMarkup = calculateUnitPriceFromMarkup(selectedProduct.unitPrice, fallbackType, String(selectedProduct.markupValue ?? 0));
+      setQuickUnitPrice(priceWithMarkup.toFixed(2));
+    };
+
+    loadTodayMarkup().catch(() => {
+      // Keep manual pricing if markup load fails.
+    });
+  }, [selectedProduct]);
 
   if (!isInitialized) {
     return (
@@ -546,226 +617,124 @@ export default function App() {
           </View>
         </View>
 
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.sectionTitle}>API Settings</Text>
-            <Pressable style={styles.linkButton} onPress={() => setShowSettings((value) => !value)}>
-              <Text style={styles.linkButtonText}>{showSettings ? 'Hide' : 'Show'}</Text>
-            </Pressable>
-          </View>
-
-          {showSettings ? (
-            <>
-              <TextInput
-                style={styles.input}
-                value={settings.authToken}
-                onChangeText={(value) => setSettings((current) => ({ ...current, authToken: value }))}
-                placeholder="Bearer token"
-                placeholderTextColor="#8f98a3"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <TextInput
-                style={styles.input}
-                value={settings.productsEndpoint}
-                onChangeText={(value) => setSettings((current) => ({ ...current, productsEndpoint: value }))}
-                placeholder="Products endpoint"
-                placeholderTextColor="#8f98a3"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <TextInput
-                style={styles.input}
-                value={settings.customersEndpoint}
-                onChangeText={(value) => setSettings((current) => ({ ...current, customersEndpoint: value }))}
-                placeholder="Members endpoint"
-                placeholderTextColor="#8f98a3"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <TextInput
-                style={styles.input}
-                value={settings.purchasesEndpoint}
-                onChangeText={(value) => setSettings((current) => ({ ...current, purchasesEndpoint: value }))}
-                placeholder="Purchases endpoint"
-                placeholderTextColor="#8f98a3"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <TextInput
-                style={styles.input}
-                value={settings.salesEndpoint}
-                onChangeText={(value) => setSettings((current) => ({ ...current, salesEndpoint: value }))}
-                placeholder="Sales endpoint"
-                placeholderTextColor="#8f98a3"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-
-              <Pressable style={styles.secondaryButton} onPress={handleSaveSettings}>
-                <Text style={styles.secondaryButtonText}>Save Settings</Text>
-              </Pressable>
-
-              <Pressable style={styles.secondaryButton} onPress={() => setShowPinForm((value) => !value)}>
-                <Text style={styles.secondaryButtonText}>{showPinForm ? 'Hide PIN Form' : 'Change PIN'}</Text>
-              </Pressable>
-
-              {showPinForm ? (
-                <>
-                  <TextInput
-                    style={styles.input}
-                    value={currentPin}
-                    onChangeText={setCurrentPin}
-                    placeholder="Current PIN"
-                    placeholderTextColor="#8f98a3"
-                    keyboardType="number-pad"
-                    secureTextEntry
-                    maxLength={8}
-                  />
-                  <TextInput
-                    style={styles.input}
-                    value={updatedPin}
-                    onChangeText={setUpdatedPin}
-                    placeholder="New PIN"
-                    placeholderTextColor="#8f98a3"
-                    keyboardType="number-pad"
-                    secureTextEntry
-                    maxLength={8}
-                  />
-                  <TextInput
-                    style={styles.input}
-                    value={confirmUpdatedPin}
-                    onChangeText={setConfirmUpdatedPin}
-                    placeholder="Confirm new PIN"
-                    placeholderTextColor="#8f98a3"
-                    keyboardType="number-pad"
-                    secureTextEntry
-                    maxLength={8}
-                  />
-                  <Pressable style={styles.syncButton} onPress={handleChangePin}>
-                    <Text style={styles.syncButtonText}>Update PIN</Text>
-                  </Pressable>
-                </>
-              ) : null}
-            </>
-          ) : null}
-
-          <View style={styles.buttonRow}>
-            <Pressable style={styles.syncButton} onPress={() => runMasterDataSync(true)} disabled={isRefreshingMasterData}>
-              <Text style={styles.syncButtonText}>{isRefreshingMasterData ? 'Refreshing...' : 'Refresh Products/Members'}</Text>
-            </Pressable>
-            <Pressable style={styles.syncButton} onPress={() => runFullSync(true)} disabled={isSyncing || isRefreshingMasterData}>
-              <Text style={styles.syncButtonText}>Sync All</Text>
-            </Pressable>
-          </View>
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>New Record</Text>
-
-          <View style={styles.typeRow}>
-            <Pressable
-              style={[styles.typeButton, transactionType === 'purchase' && styles.typeButtonActive]}
-              onPress={() => setTransactionType('purchase')}
-            >
-              <Text style={styles.typeButtonText}>Purchase</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.typeButton, transactionType === 'sale' && styles.typeButtonActive]}
-              onPress={() => setTransactionType('sale')}
-            >
-              <Text style={styles.typeButtonText}>Sale</Text>
-            </Pressable>
+        <View style={styles.posCard}>
+          <View style={styles.posHeaderRow}>
+            <Text style={styles.posTitle}>POS</Text>
           </View>
 
           <Pressable style={styles.selector} onPress={() => setShowProductPicker(true)}>
-            <Text style={styles.selectorLabel}>Product</Text>
-            <Text style={styles.selectorValue}>{selectedProduct ? selectedProduct.name : 'Choose cached product'}</Text>
+            <Text style={styles.selectorLabel}>Sale Product</Text>
+            <Text style={styles.selectorValue}>{selectedProduct ? selectedProduct.name : 'Choose product for POS'}</Text>
           </Pressable>
 
-          {transactionType === 'sale' ? (
-            <Pressable style={styles.secondaryButton} onPress={() => setShowAddProductModal(true)}>
-              <Text style={styles.secondaryButtonText}>Missing product? Add to dropdown</Text>
+          <View style={styles.posActionRow}>
+            <Pressable style={[styles.secondaryButton, styles.markupSaveButton]} onPress={() => setShowAddProductModal(true)}>
+              <Text style={styles.secondaryButtonText}>Add New Product</Text>
             </Pressable>
-          ) : null}
-
-          {transactionType === 'purchase' ? (
-            <Pressable style={styles.selector} onPress={() => setShowCustomerPicker(true)}>
-              <Text style={styles.selectorLabel}>Member</Text>
-              <Text style={styles.selectorValue}>
-                {selectedCustomer
-                  ? `${selectedCustomer.name} (${selectedCustomer.memberId || selectedCustomer.remoteId})`
-                  : 'Choose cached member'}
-              </Text>
+            <Pressable style={[styles.syncButton, styles.markupSaveButton]} onPress={() => runFullSync(true)}>
+              <Text style={styles.syncButtonText}>Sync Data</Text>
             </Pressable>
-          ) : null}
+          </View>
 
-          <TextInput
-            style={styles.input}
-            value={itemName}
-            onChangeText={setItemName}
-            placeholder="Item name"
-            placeholderTextColor="#8f98a3"
-          />
-          <TextInput
-            style={styles.input}
-            value={quantity}
-            onChangeText={setQuantity}
-            placeholder="Quantity"
-            keyboardType="decimal-pad"
-            placeholderTextColor="#8f98a3"
-          />
-          <TextInput
-            style={styles.input}
-            value={unitPrice}
-            onChangeText={setUnitPrice}
-            placeholder="Unit price"
-            keyboardType="decimal-pad"
-            placeholderTextColor="#8f98a3"
-          />
+          <View
+            style={[
+              styles.syncStatusBar,
+              syncStatusTone === 'success' && styles.syncStatusBarSuccess,
+              syncStatusTone === 'error' && styles.syncStatusBarError,
+            ]}
+          >
+            <Text style={styles.syncStatusText}>{syncStatusText}</Text>
+          </View>
 
-          <Text style={styles.preview}>
-            {transactionType === 'sale'
-              ? 'Record each sale with its own quantity and unit price.'
-              : 'Record each purchase with its own quantity and unit price.'}
-          </Text>
-          <Text style={styles.preview}>Total: {totalPreview.toFixed(2)}</Text>
+          <View style={styles.posResultBox}>
+            <Text style={styles.posResultTitle}>Results</Text>
+            <Text style={styles.posResultMain}>
+              {(Number(quickQuantity || 0) * Number(quickUnitPrice || quickAmount || 0) || 0).toFixed(0)}VT
+            </Text>
+            <Text style={styles.posResultText}>Member: {quickMemberId.trim() || '-'}</Text>
+          </View>
 
-          <Pressable style={styles.saveButton} onPress={handleSave}>
-            <Text style={styles.saveButtonText}>Save Locally</Text>
-          </Pressable>
+          <View style={styles.amountGrid}>
+            {parsedPresetAmounts.map((amount, index) => {
+              const colors = ['#ff5b2a', '#f39c12', '#f7c500', '#efe145', '#c8da3b', '#8bc34a'];
+              const isActive = quickAmount === amount;
+              return (
+                <Pressable
+                  key={amount}
+                  style={[styles.amountButton, { backgroundColor: colors[index] }, isActive && styles.amountButtonActive]}
+                  onPress={() => handleSelectQuickAmount(amount)}
+                >
+                  <Text style={styles.amountButtonText}>{amount}VT</Text>
+                </Pressable>
+              );
+            })}
+          </View>
 
-          <Pressable style={styles.syncButton} onPress={() => runTransactionSync(true)} disabled={isSyncing}>
-            <Text style={styles.syncButtonText}>{syncButtonLabel}</Text>
-          </Pressable>
-        </View>
+          <View style={styles.posActionRow}>
+            <Pressable
+              style={[styles.typeButton, quickMarkupType === 'fixed' && styles.typeButtonActive]}
+              onPress={() => setQuickMarkupType('fixed')}
+            >
+              <Text style={styles.typeButtonText}>Fixed Markup</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.typeButton, quickMarkupType === 'percent' && styles.typeButtonActive]}
+              onPress={() => setQuickMarkupType('percent')}
+            >
+              <Text style={styles.typeButtonText}>% Markup</Text>
+            </Pressable>
+          </View>
 
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Recent Records</Text>
-          {transactions.length === 0 ? (
-            <Text style={styles.empty}>No records yet.</Text>
-          ) : (
-            transactions.map((record) => (
-              <View key={record.id} style={styles.recordRow}>
-                <View>
-                  <Text style={styles.recordTitle}>
-                    {record.type.toUpperCase()} - {record.itemName}
-                  </Text>
-                  {record.customerId ? <Text style={styles.recordMeta}>Member linked</Text> : null}
-                  <Text style={styles.recordMeta}>
-                    Qty {record.quantity} x {record.unitPrice.toFixed(2)}
-                  </Text>
-                  <Text style={styles.recordMeta}>{new Date(record.createdAt).toLocaleString()}</Text>
-                </View>
-                <View>
-                  <Text style={styles.amount}>{record.totalAmount.toFixed(2)}</Text>
-                  <Text style={[styles.syncState, record.synced ? styles.syncedText : styles.pendingText]}>
-                    {record.synced ? 'Synced' : 'Pending'}
-                  </Text>
-                </View>
-              </View>
-            ))
-          )}
+          <View style={styles.posActionRow}>
+            <TextInput
+              style={[styles.input, styles.posMiniInput]}
+              value={quickMarkupValue}
+              onChangeText={setQuickMarkupValue}
+              placeholder={quickMarkupType === 'percent' ? 'Markup %' : 'Markup amount'}
+              placeholderTextColor="#8f98a3"
+              keyboardType="decimal-pad"
+            />
+            <Pressable style={[styles.secondaryButton, styles.markupSaveButton]} onPress={handleApplyTodayMarkup}>
+              <Text style={styles.secondaryButtonText}>Save Today Markup</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.posActionRow}>
+            <TextInput
+              style={[styles.input, styles.posMiniInput]}
+              value={quickQuantity}
+              onChangeText={setQuickQuantity}
+              placeholder="Qty"
+              placeholderTextColor="#8f98a3"
+              keyboardType="decimal-pad"
+            />
+            <TextInput
+              style={[styles.input, styles.posMiniInput]}
+              value={quickUnitPrice}
+              onChangeText={setQuickUnitPrice}
+              placeholder="Unit price"
+              placeholderTextColor="#8f98a3"
+              keyboardType="decimal-pad"
+            />
+          </View>
+
+          <View style={styles.posActionRow}>
+            <Pressable style={[styles.input, styles.memberIdInput]} onPress={() => setShowMemberKeypad(true)}>
+              <Text style={styles.memberIdValue}>{quickMemberId || 'Tap to enter Member ID'}</Text>
+            </Pressable>
+            <Pressable style={styles.memberPadButton} onPress={() => setShowMemberKeypad(true)}>
+              <Text style={styles.memberPadButtonText}>KEYPAD</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.posActionRow}>
+            <Pressable style={[styles.syncButton, styles.buyButton]} onPress={handleQuickBuy}>
+              <Text style={styles.syncButtonText}>BUY</Text>
+            </Pressable>
+            <Pressable style={[styles.secondaryButton, styles.resetButton]} onPress={handleQuickReset}>
+              <Text style={styles.secondaryButtonText}>RESET</Text>
+            </Pressable>
+          </View>
         </View>
       </ScrollView>
 
@@ -781,23 +750,6 @@ export default function App() {
           const match = products.find((product) => String(product.id) === key);
           if (match) {
             applySelectedProduct(match);
-          }
-        }}
-      />
-
-      <SelectionModal
-        visible={showCustomerPicker}
-        title="Select Member"
-        items={customers.map((customer) => ({
-          key: String(customer.id),
-          label: `${customer.name}${customer.memberId ? ` (${customer.memberId})` : ''}${customer.phone ? ` - ${customer.phone}` : ''}`,
-        }))}
-        onClose={() => setShowCustomerPicker(false)}
-        onSelect={(key) => {
-          const match = customers.find((customer) => String(customer.id) === key);
-          if (match) {
-            setSelectedCustomer(match);
-            setShowCustomerPicker(false);
           }
         }}
       />
@@ -837,6 +789,38 @@ export default function App() {
             </Pressable>
           </View>
         </View>
+      </Modal>
+
+      <Modal visible={showMemberKeypad} animationType="slide" onRequestClose={() => setShowMemberKeypad(false)}>
+        <SafeAreaView style={styles.keypadScreen}>
+          <View style={styles.keypadHeader}>
+            <Text style={styles.keypadHeaderTitle}>Enter Member ID</Text>
+            <Text style={styles.keypadMemberValue}>{quickMemberId || '-'}</Text>
+          </View>
+
+          <View style={styles.keypadScreenGrid}>
+            {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => (
+              <Pressable key={digit} style={styles.keypadScreenButton} onPress={() => appendMemberDigit(digit)}>
+                <Text style={styles.keypadScreenText}>{digit}</Text>
+              </Pressable>
+            ))}
+            <Pressable style={[styles.keypadScreenButton, styles.keypadScreenAction]} onPress={removeLastMemberDigit}>
+              <Text style={styles.keypadScreenText}>DEL</Text>
+            </Pressable>
+            <Pressable style={styles.keypadScreenButton} onPress={() => appendMemberDigit('0')}>
+              <Text style={styles.keypadScreenText}>0</Text>
+            </Pressable>
+            <Pressable style={[styles.keypadScreenButton, styles.keypadScreenAction]} onPress={() => setQuickMemberId('')}>
+              <Text style={styles.keypadScreenText}>CLR</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.keypadFooter}>
+            <Pressable style={[styles.secondaryButton, styles.keypadFooterButton]} onPress={() => setShowMemberKeypad(false)}>
+              <Text style={styles.secondaryButtonText}>Done</Text>
+            </Pressable>
+          </View>
+        </SafeAreaView>
       </Modal>
     </SafeAreaView>
   );
@@ -961,6 +945,144 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     shadowRadius: 8,
     elevation: 2,
+  },
+  posCard: {
+    backgroundColor: '#667a42',
+    borderRadius: 14,
+    padding: 14,
+    gap: 10,
+  },
+  posHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  posToggleButton: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  posToggleText: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  posTitle: {
+    fontSize: 32,
+    letterSpacing: 4,
+    color: '#e7efdc',
+    fontWeight: '700',
+  },
+  posResultBox: {
+    borderWidth: 2,
+    borderColor: '#cfd6c4',
+    borderRadius: 14,
+    padding: 12,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    gap: 4,
+  },
+  posResultTitle: {
+    textAlign: 'center',
+    color: '#f0f5ea',
+    fontSize: 20,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  posResultText: {
+    color: '#eef5e7',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  posResultMain: {
+    color: '#ffffff',
+    fontSize: 44,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  amountGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    rowGap: 10,
+  },
+  amountButton: {
+    width: '32%',
+    borderRadius: 14,
+    paddingVertical: 24,
+    alignItems: 'center',
+  },
+  amountButtonActive: {
+    borderWidth: 3,
+    borderColor: '#ffffff',
+  },
+  amountButtonText: {
+    color: '#ffffff',
+    fontSize: 24,
+    fontWeight: '800',
+  },
+  posActionRow: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'stretch',
+  },
+  memberIdInput: {
+    flex: 1,
+    backgroundColor: '#41444d',
+    justifyContent: 'center',
+    borderColor: '#5e6168',
+  },
+  posMiniInput: {
+    flex: 1,
+    backgroundColor: '#f6f9f3',
+  },
+  markupSaveButton: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  memberIdValue: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  memberPadButton: {
+    backgroundColor: '#2f453a',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  memberPadButtonText: {
+    color: '#e8f3ea',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  syncStatusBar: {
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+  },
+  syncStatusBarSuccess: {
+    backgroundColor: 'rgba(30,130,76,0.35)',
+  },
+  syncStatusBarError: {
+    backgroundColor: 'rgba(179,100,0,0.35)',
+  },
+  syncStatusText: {
+    color: '#f2f8ea',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  buyButton: {
+    flex: 1,
+    backgroundColor: '#4caf50',
+    justifyContent: 'center',
+  },
+  resetButton: {
+    flex: 1,
+    backgroundColor: '#afb2aa',
+    justifyContent: 'center',
   },
   cardHeader: {
     flexDirection: 'row',
@@ -1146,5 +1268,55 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     shadowRadius: 8,
     elevation: 2,
+  },
+  keypadScreen: {
+    flex: 1,
+    backgroundColor: '#1f3b1d',
+    padding: 16,
+    gap: 14,
+  },
+  keypadHeader: {
+    backgroundColor: '#2f4f2b',
+    borderRadius: 14,
+    padding: 14,
+    gap: 6,
+  },
+  keypadHeaderTitle: {
+    color: '#d5e7d2',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  keypadMemberValue: {
+    color: '#ffffff',
+    fontSize: 34,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  keypadScreenGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    rowGap: 10,
+  },
+  keypadScreenButton: {
+    width: '31%',
+    backgroundColor: '#4f6a35',
+    borderRadius: 12,
+    paddingVertical: 22,
+    alignItems: 'center',
+  },
+  keypadScreenAction: {
+    backgroundColor: '#3e5131',
+  },
+  keypadScreenText: {
+    color: '#ffffff',
+    fontSize: 26,
+    fontWeight: '900',
+  },
+  keypadFooter: {
+    marginTop: 'auto',
+  },
+  keypadFooterButton: {
+    paddingVertical: 14,
   },
 });

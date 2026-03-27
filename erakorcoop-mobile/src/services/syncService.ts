@@ -17,15 +17,37 @@ const SERVER_BASE_URL = 'https://erakorcoop.innovatelhubltd.com';
 const BASE_RETRY_DELAY_MS = 15000;
 const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 
+function buildAuthHeader(token: string): string | null {
+    const normalized = token.trim();
+    if (!normalized) {
+        return null;
+    }
+
+    if (/^Bearer\s+/i.test(normalized)) {
+        return normalized;
+    }
+
+    return `Bearer ${normalized}`;
+}
+
+function requireAuthHeader(token: string): string {
+    const authHeader = buildAuthHeader(token);
+    if (!authHeader) {
+        throw new Error('Missing bearer token. Open API Settings, enter token, and tap Save Settings.');
+    }
+    return authHeader;
+}
+
 export function subscribeToConnectivity(callback: (isOnline: boolean) => void): () => void {
     return NetInfo.addEventListener((state) => {
         callback(Boolean(state.isConnected && state.isInternetReachable !== false));
     });
 }
 
-export async function syncQueuedTransactions(): Promise<SyncResult> {
+export async function syncQueuedTransactions(forceRetry = false): Promise<SyncResult> {
     const queue = await listPendingSyncQueue();
     const settings = await loadSettings();
+    const authHeader = requireAuthHeader(settings.authToken);
 
     if (queue.length === 0) {
         return { synced: 0, failed: 0, skipped: 0 };
@@ -45,12 +67,12 @@ export async function syncQueuedTransactions(): Promise<SyncResult> {
         timeout: 15000,
         headers: {
             'Content-Type': 'application/json',
-            ...(settings.authToken ? { Authorization: `Bearer ${settings.authToken}` } : {}),
+            ...(authHeader ? { Authorization: authHeader } : {}),
         },
     });
 
     for (const item of queue) {
-        if (item.nextRetryAt && new Date(item.nextRetryAt).getTime() > Date.now()) {
+        if (!forceRetry && item.nextRetryAt && new Date(item.nextRetryAt).getTime() > Date.now()) {
             skipped += 1;
             continue;
         }
@@ -83,12 +105,13 @@ export async function syncQueuedTransactions(): Promise<SyncResult> {
 
 export async function syncMasterData(): Promise<MasterDataSyncResult> {
     const settings = await loadSettings();
+    const authHeader = requireAuthHeader(settings.authToken);
     const api = axios.create({
         baseURL: SERVER_BASE_URL,
         timeout: 15000,
         headers: {
             'Content-Type': 'application/json',
-            ...(settings.authToken ? { Authorization: `Bearer ${settings.authToken}` } : {}),
+            ...(authHeader ? { Authorization: authHeader } : {}),
         },
     });
 
@@ -117,12 +140,13 @@ export async function syncMasterData(): Promise<MasterDataSyncResult> {
 
 export async function pushProductToServer(input: { name: string; unit: string; unitPrice: number }): Promise<void> {
     const settings = await loadSettings();
+    const authHeader = requireAuthHeader(settings.authToken);
     const api = axios.create({
         baseURL: SERVER_BASE_URL,
         timeout: 15000,
         headers: {
             'Content-Type': 'application/json',
-            ...(settings.authToken ? { Authorization: `Bearer ${settings.authToken}` } : {}),
+            ...(authHeader ? { Authorization: authHeader } : {}),
         },
     });
 
@@ -142,6 +166,7 @@ export async function pushProductToServer(input: { name: string; unit: string; u
 export async function syncQueuedProducts(): Promise<SyncResult> {
     const queue = await listPendingProductSyncQueue();
     const settings = await loadSettings();
+    const authHeader = requireAuthHeader(settings.authToken);
 
     if (queue.length === 0) {
         return { synced: 0, failed: 0, skipped: 0 };
@@ -156,7 +181,7 @@ export async function syncQueuedProducts(): Promise<SyncResult> {
         timeout: 15000,
         headers: {
             'Content-Type': 'application/json',
-            ...(settings.authToken ? { Authorization: `Bearer ${settings.authToken}` } : {}),
+            ...(authHeader ? { Authorization: authHeader } : {}),
         },
     });
 
