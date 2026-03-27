@@ -66,6 +66,7 @@ export default function App() {
   const [quickMarkupValue, setQuickMarkupValue] = useState('');
   const [syncStatusText, setSyncStatusText] = useState('No sync yet');
   const [syncStatusTone, setSyncStatusTone] = useState<'neutral' | 'success' | 'error'>('neutral');
+  const isAnySyncing = isSyncing || isRefreshingMasterData || isSyncingProducts;
 
   const parsedPresetAmounts = useMemo(() => {
     const values = settings.posPresetAmounts
@@ -636,15 +637,18 @@ export default function App() {
             </Pressable>
           </View>
 
-          <View
+          <Pressable
             style={[
               styles.syncStatusBar,
               syncStatusTone === 'success' && styles.syncStatusBarSuccess,
               syncStatusTone === 'error' && styles.syncStatusBarError,
             ]}
+            onPress={() => runFullSync(true)}
+            disabled={isAnySyncing}
           >
             <Text style={styles.syncStatusText}>{syncStatusText}</Text>
-          </View>
+            <Text style={styles.syncStatusHint}>{isAnySyncing ? 'Syncing now...' : 'Tap to retry sync'}</Text>
+          </Pressable>
 
           <View style={styles.posResultBox}>
             <Text style={styles.posResultTitle}>Results</Text>
@@ -1073,6 +1077,11 @@ const styles = StyleSheet.create({
     color: '#f2f8ea',
     fontWeight: '700',
     fontSize: 12,
+  },
+  syncStatusHint: {
+    color: '#dce9d7',
+    marginTop: 2,
+    fontSize: 11,
   },
   buyButton: {
     flex: 1,

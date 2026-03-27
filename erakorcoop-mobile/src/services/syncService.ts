@@ -13,7 +13,8 @@ import {
 } from './database';
 import { MasterDataSyncResult, SyncResult, TransactionType } from '../types';
 
-const SERVER_BASE_URL = 'https://erakorcoop.innovatelhubltd.com';
+const ADMIN_DASHBOARD_URL = 'https://erakorcoop.innovatelhubltd.com/admin';
+const SERVER_BASE_URL = ADMIN_DASHBOARD_URL.replace(/\/admin\/?$/i, '');
 const BASE_RETRY_DELAY_MS = 15000;
 const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 
