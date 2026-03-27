@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "erakorcoop-mobile",
+    "slug": "erakorcoop-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/erakor-logo.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/erakor-logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#FFFFFF",
+        "foregroundImage": "./assets/erakor-logo.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.jyaruel.erakorcoopmobile"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-sqlite"
+    ]
+  }
+}
