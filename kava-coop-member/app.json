@@ -1,0 +1,39 @@
+{
+  "expo": {
+    "name": "Kava Co-op Member",
+    "slug": "kava-coop-member",
+    "version": "1.0.0",
+    "scheme": "kavacoop-member",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1a2f1f"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.kavacoop.member",
+      "buildNumber": "1"
+    },
+    "android": {
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1a2f1f"
+      },
+      "package": "com.kavacoop.member"
+    },
+    "extra": {
+      "apiBaseUrl": "https://kavacoop.innovatelhubltd.com",
+      "memberLoginPath": "/api/mobile/member/login",
+      "memberConsumptionPath": "/api/mobile/member/me/consumption",
+      "memberDebtsPath": "/api/mobile/member/me/debts",
+      "eas": {
+        "projectId": "a4105273-71e9-4de3-9ef1-f5b9fe295e75"
+      }
+    },
+    "owner": "jyaruel"
+  }
+}
